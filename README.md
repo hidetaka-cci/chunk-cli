@@ -119,7 +119,7 @@ chunk auth set|status|remove               Authentication
 chunk sidecar list|create|exec|ssh         Manage cloud sidecar environments
 chunk sidecar sync|env|build               Sync files, detect env, build images
 chunk sidecar use|current|forget           Manage active sidecar
-chunk sidecar setup                        Detect env, install deps, snapshot
+chunk sidecar setup                        Detect env and install deps
 chunk sidecar snapshot create|get          Manage sidecar snapshots
 chunk init                                 Initialize project configuration
 chunk validate [name]                      Run quality checks
