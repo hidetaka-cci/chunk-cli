@@ -72,15 +72,29 @@ func resolveSidecarID(ctx context.Context, sidecarID *string) error {
 }
 
 // resolveOrgID returns orgID from the flag, the CIRCLECI_ORG_ID env var,
-// or by calling pickOrg as a last resort (e.g. to present a TUI picker).
-func resolveOrgID(orgID string, pickOrg func() (string, error)) (string, error) {
+// the project config, or by calling pickOrg as a last resort (e.g. to present
+// a TUI picker).
+func resolveOrgID(orgID, projOrgID string, pickOrg func() (string, error)) (string, error) {
 	if orgID != "" {
 		return orgID, nil
 	}
 	if envID := os.Getenv(config.EnvCircleCIOrgID); envID != "" {
 		return envID, nil
 	}
+	if projOrgID != "" {
+		return projOrgID, nil
+	}
 	return pickOrg()
+}
+
+// configOrgID returns the orgID stored in .chunk/config.json for dir, or ""
+// if the config cannot be loaded or has no orgID set.
+func configOrgID(dir string) string {
+	cfg, err := config.LoadProjectConfig(dir)
+	if err != nil {
+		return ""
+	}
+	return cfg.OrgID
 }
 
 func orgPicker(ctx context.Context, client *circleci.Client) func() (string, error) {
@@ -125,11 +139,17 @@ func newSidecarListCmd() *cobra.Command {
 		Short: "List sidecars",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			io := iostream.FromCmd(cmd)
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
-			resolvedOrgID, err := resolveOrgID(orgID, orgPicker(cmd.Context(), client))
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working directory: %w", err)
+			}
+			resolvedOrgID, err := resolveOrgID(orgID, configOrgID(cwd), orgPicker(cmd.Context(), client))
 			if err != nil {
 				return err
 			}
@@ -185,14 +205,20 @@ func newSidecarCreateCmd() *cobra.Command {
 		Long:  "Create a sidecar.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			io := iostream.FromCmd(cmd)
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
 			if name == "" {
 				name = randomSidecarName()
 			}
-			resolvedOrgID, err := resolveOrgID(orgID, orgPicker(cmd.Context(), client))
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("get working directory: %w", err)
+			}
+			resolvedOrgID, err := resolveOrgID(orgID, configOrgID(cwd), orgPicker(cmd.Context(), client))
 			if err != nil {
 				return err
 			}
@@ -237,7 +263,9 @@ func newSidecarExecCmd() *cobra.Command {
 			if err := resolveSidecarID(cmd.Context(), &sidecarID); err != nil {
 				return err
 			}
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -281,7 +309,9 @@ func newSidecarAddSSHKeyCmd() *cobra.Command {
 			if err := resolveSidecarID(cmd.Context(), &sidecarID); err != nil {
 				return err
 			}
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -337,7 +367,9 @@ func newSidecarSSHCmd() *cobra.Command {
 				return err
 			}
 			authSock := os.Getenv(config.EnvSSHAuthSock)
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -383,7 +415,9 @@ func newSidecarSyncCmd() *cobra.Command {
 				return err
 			}
 			authSock := os.Getenv(config.EnvSSHAuthSock)
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -413,7 +447,7 @@ func newSidecarSyncCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&sidecarID, "sidecar-id", "", "Sidecar ID (defaults to active sidecar)")
 	cmd.Flags().StringVar(&identityFile, "identity-file", "", "SSH identity file")
-	cmd.Flags().StringVar(&workdir, "workdir", "", "Destination path on sidecar (auto-detected as /workspace/<repo> when omitted)")
+	cmd.Flags().StringVar(&workdir, "workdir", "", "Destination path on sidecar (auto-detected as ~/workspace/<repo> when omitted)")
 
 	return cmd
 }
@@ -664,7 +698,9 @@ snapshot with 'chunk sidecar create --image <snapshot-id>'.`,
 			if err := resolveSidecarID(cmd.Context(), &sidecarID); err != nil {
 				return err
 			}
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -706,7 +742,9 @@ func newSidecarSnapshotGetCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			io := iostream.FromCmd(cmd)
-			client, err := ensureCircleCIClient(cmd.Context(), io, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, io, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -758,7 +796,9 @@ Example:
 			status := newStatusFunc(streams)
 			authSock := os.Getenv("SSH_AUTH_SOCK")
 
-			client, err := ensureCircleCIClient(cmd.Context(), streams, tui.PromptHidden)
+			insecureStorage := insecureStorageFlag(cmd)
+			rc, _ := config.Resolve("", "", insecureStorage)
+			client, err := ensureCircleCIClient(cmd.Context(), cmd, rc, streams, tui.PromptHidden)
 			if err != nil {
 				return err
 			}
@@ -794,7 +834,7 @@ Example:
 			// Step 2: Resolve or create sidecar.
 			if sidecarID == "" {
 				var resolveErr error
-				sidecarID, _, resolveErr = sidecarSetupResolveSidecar(cmd.Context(), client, orgID, name, status, streams)
+				sidecarID, _, resolveErr = sidecarSetupResolveSidecar(cmd.Context(), client, orgID, name, dir, status, streams)
 				if resolveErr != nil {
 					return resolveErr
 				}
@@ -856,7 +896,7 @@ Example:
 func sidecarSetupResolveSidecar(
 	ctx context.Context,
 	client *circleci.Client,
-	orgID, name string,
+	orgID, name, workDir string,
 	status iostream.StatusFunc,
 	streams iostream.Streams,
 ) (id, displayName string, err error) {
@@ -871,7 +911,7 @@ func sidecarSetupResolveSidecar(
 	if name == "" {
 		name = randomSidecarName()
 	}
-	resolvedOrgID, err := resolveOrgID(orgID, orgPicker(ctx, client))
+	resolvedOrgID, err := resolveOrgID(orgID, configOrgID(workDir), orgPicker(ctx, client))
 	if err != nil {
 		return "", "", err
 	}
